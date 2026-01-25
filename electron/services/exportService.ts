@@ -77,6 +77,7 @@ export interface ExportOptions {
   excelCompactColumns?: boolean
   txtColumns?: string[]
   sessionLayout?: 'shared' | 'per-session'
+  displayNamePreference?: 'group-nickname' | 'remark' | 'nickname'
 }
 
 const TXT_COLUMN_DEFINITIONS: Array<{ id: string; label: string }> = [
@@ -406,6 +407,28 @@ class ExportService {
   private looksLikeHex(s: string): boolean {
     if (s.length % 2 !== 0) return false
     return /^[0-9a-fA-F]+$/.test(s)
+  }
+
+  /**
+   * 根据用户偏好获取显示名称
+   */
+  private getPreferredDisplayName(
+    wxid: string,
+    nickname: string,
+    remark: string,
+    groupNickname: string,
+    preference: 'group-nickname' | 'remark' | 'nickname' = 'remark'
+  ): string {
+    switch (preference) {
+      case 'group-nickname':
+        return groupNickname || remark || nickname || wxid
+      case 'remark':
+        return remark || nickname || wxid
+      case 'nickname':
+        return nickname || wxid
+      default:
+        return nickname || wxid
+    }
   }
 
   private looksLikeBase64(s: string): boolean {
@@ -1886,6 +1909,11 @@ class ExportService {
         })
       }
 
+      // ========== 预加载群昵称（用于名称显示偏好） ==========
+      const groupNicknamesMap = isGroup
+        ? await this.getGroupNicknamesForRoom(sessionId)
+        : new Map<string, string>()
+
       // ========== 阶段3：构建消息列表 ==========
       onProgress?.({
         current: 55,
@@ -1912,6 +1940,24 @@ class ExportService {
           content = this.parseMessageContent(msg.content, msg.localType)
         }
 
+        // 获取发送者信息用于名称显示
+        const senderWxid = msg.senderUsername
+        const contact = await wcdbService.getContact(senderWxid)
+        const senderNickname = contact.success && contact.contact?.nickName
+          ? contact.contact.nickName
+          : (senderInfo.displayName || senderWxid)
+        const senderRemark = contact.success && contact.contact?.remark ? contact.contact.remark : ''
+        const senderGroupNickname = groupNicknamesMap.get(senderWxid?.toLowerCase() || '') || ''
+
+        // 使用用户偏好的显示名称
+        const senderDisplayName = this.getPreferredDisplayName(
+          senderWxid,
+          senderNickname,
+          senderRemark,
+          senderGroupNickname,
+          options.displayNamePreference || 'remark'
+        )
+
         allMessages.push({
           localId: allMessages.length + 1,
           createTime: msg.createTime,
@@ -1921,7 +1967,7 @@ class ExportService {
           content,
           isSend: msg.isSend ? 1 : 0,
           senderUsername: msg.senderUsername,
-          senderDisplayName: senderInfo.displayName,
+          senderDisplayName,
           source,
           senderAvatarKey: msg.senderUsername
         })
@@ -1938,14 +1984,33 @@ class ExportService {
 
       const { chatlab, meta } = this.getExportMeta(sessionId, sessionInfo, isGroup)
 
+      // 获取会话的昵称和备注信息
+      const sessionContact = await wcdbService.getContact(sessionId)
+      const sessionNickname = sessionContact.success && sessionContact.contact?.nickName
+        ? sessionContact.contact.nickName
+        : sessionInfo.displayName
+      const sessionRemark = sessionContact.success && sessionContact.contact?.remark
+        ? sessionContact.contact.remark
+        : ''
+      const sessionGroupNickname = isGroup
+        ? (groupNicknamesMap.get(sessionId.toLowerCase()) || '')
+        : ''
+
+      // 使用用户偏好的显示名称
+      const sessionDisplayName = this.getPreferredDisplayName(
+        sessionId,
+        sessionNickname,
+        sessionRemark,
+        sessionGroupNickname,
+        options.displayNamePreference || 'remark'
+      )
+
       const detailedExport: any = {
-        chatlab,
-        meta,
         session: {
           wxid: sessionId,
-          nickname: sessionInfo.displayName,
-          remark: sessionInfo.displayName,
-          displayName: sessionInfo.displayName,
+          nickname: sessionNickname,
+          remark: sessionRemark,
+          displayName: sessionDisplayName,
           type: isGroup ? '群聊' : '私聊',
           lastTimestamp: collected.lastTime,
           messageCount: allMessages.length,
