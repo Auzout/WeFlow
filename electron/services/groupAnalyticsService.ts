@@ -3,6 +3,7 @@ import * as path from 'path'
 import ExcelJS from 'exceljs'
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
+import { chatService } from './chatService'
 
 export interface GroupChatInfo {
   username: string
@@ -240,23 +241,38 @@ class GroupAnalyticsService {
         .map((row) => row.username || row.user_name || row.userName || '')
         .filter((username) => username.includes('@chatroom'))
 
-      const [displayNames, avatarUrls, memberCounts] = await Promise.all([
-        wcdbService.getDisplayNames(groupIds),
-        wcdbService.getAvatarUrls(groupIds),
-        wcdbService.getGroupMemberCounts(groupIds)
+      const [memberCounts, contactInfo] = await Promise.all([
+        wcdbService.getGroupMemberCounts(groupIds),
+        chatService.enrichSessionsContactInfo(groupIds)
       ])
+
+      let fallbackNames: { success: boolean; map?: Record<string, string> } | null = null
+      let fallbackAvatars: { success: boolean; map?: Record<string, string> } | null = null
+      if (!contactInfo.success || !contactInfo.contacts) {
+        const [displayNames, avatarUrls] = await Promise.all([
+          wcdbService.getDisplayNames(groupIds),
+          wcdbService.getAvatarUrls(groupIds)
+        ])
+        fallbackNames = displayNames
+        fallbackAvatars = avatarUrls
+      }
 
       const groups: GroupChatInfo[] = []
       for (const groupId of groupIds) {
+        const contact = contactInfo.success && contactInfo.contacts ? contactInfo.contacts[groupId] : undefined
+        const displayName = contact?.displayName ||
+          (fallbackNames && fallbackNames.success && fallbackNames.map ? (fallbackNames.map[groupId] || '') : '') ||
+          groupId
+        const avatarUrl = contact?.avatarUrl ||
+          (fallbackAvatars && fallbackAvatars.success && fallbackAvatars.map ? fallbackAvatars.map[groupId] : undefined)
+
         groups.push({
           username: groupId,
-          displayName: displayNames.success && displayNames.map
-            ? (displayNames.map[groupId] || groupId)
-            : groupId,
+          displayName,
           memberCount: memberCounts.success && memberCounts.map && typeof memberCounts.map[groupId] === 'number'
             ? memberCounts.map[groupId]
             : 0,
-          avatarUrl: avatarUrls.success && avatarUrls.map ? avatarUrls.map[groupId] : undefined
+          avatarUrl
         })
       }
 
